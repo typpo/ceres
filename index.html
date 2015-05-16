@@ -1,0 +1,220 @@
+﻿<!doctype html>
+<html>
+<head>
+
+  <title>The Moon</title>
+
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
+
+  <!-- Allow fullscreen app install -->
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+
+  <link type="text/css" href="css/main.css" rel="stylesheet" />
+
+</head>
+<body>
+
+  <!-- Three.JS Container -->
+  <div id="container"></div>
+
+  <div id="loading-container">
+    <h2>Loading...</h2>
+    <p id="loading-message"></p>
+  </div>
+
+  <div id="info-container" style="display:none"></div>
+
+  <!-- GLSL vertex shader for the moon -->
+  <script id="norm-vert-shader" type="x-shader/x-vertex">
+    attribute vec4 tangent;
+
+    uniform vec2 uvScale;
+    uniform vec3 lightPosition;
+
+    varying vec2 vUv;
+    varying mat3 tbn;
+    varying vec3 vLightVector;
+
+    void main() {
+        vUv = uvScale * uv;
+
+        /** Create tangent-binormal-normal matrix used to transform
+            coordinates from object space to tangent space */
+        vec3 vNormal = normalize(normalMatrix * normal);
+        vec3 vTangent = normalize( normalMatrix * tangent.xyz );
+        vec3 vBinormal = normalize(cross( vNormal, vTangent ) * tangent.w);
+        tbn = mat3(vTangent, vBinormal, vNormal);
+
+        /** Calculate the vertex-to-light vector */
+        vec4 lightVector = viewMatrix * vec4(lightPosition, 1.0);
+        vec4 modelViewPosition = modelViewMatrix * vec4(position, 1.0);
+        vLightVector = normalize(lightVector.xyz - modelViewPosition.xyz);
+
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  </script>
+
+  <!-- GLSL fragment shader for the moon -->
+  <script id="norm-frag-shader" type="x-shader/x-fragment">
+    uniform sampler2D textureMap;
+    uniform sampler2D normalMap;
+
+    varying vec2 vUv;
+    varying mat3 tbn;
+    varying vec3 vLightVector;
+
+    void main() {
+        /** Transform texture coordinate of normal map to a range (-1, 1) */
+        vec3 normalCoordinate = texture2D(normalMap, vUv).xyz * 2.0 - 1.0;
+
+        /** Transform the normal vector in the RGB channels to tangent space */
+        vec3 normal = normalize(tbn * normalCoordinate.rgb);
+
+        /** Lighting intensity is calculated as dot of normal vector and
+            the vertex-to-light vector */
+        float intensity = max(0.07, dot(normal, vLightVector));
+        vec4 lighting = vec4(intensity, intensity, intensity, 1.0);
+
+        /** Final color is calculated with the lighting applied */
+        gl_FragColor = texture2D(textureMap, vUv) * lighting;
+    }
+  </script>
+
+  <script type="x-shader/x-vertex" id="orbit-vertex-shader">
+      // MIT License.
+      // Copyright Ian Webster 2012 (asterank.com)
+      // https://github.com/typpo/asterank/blob/master/LICENSE
+      #define pi 3.141592653589793238462643383279
+
+      attribute vec3 value_color;
+      varying vec3 vColor;
+
+      attribute float size;
+
+      uniform float jed;
+
+      attribute float a;
+      attribute float e;
+      attribute float i;
+      attribute float o;
+      attribute float P;
+      attribute float ma;
+      attribute float n;
+      attribute float w;
+      attribute float epoch;
+
+      attribute float visible;
+
+      varying float vLocked;
+      varying float vDiscard;
+
+      vec3 getAstroPos() {
+        float i_rad = (i) * pi/180.0;
+        float o_rad = (o) * pi/180.0; // longitude of ascending node
+        float p_rad = (w) * pi/180.0; // LONGITUDE of perihelion
+        float ma_rad = ma * pi/180.0;
+        float n_rad;
+        n_rad = 2.0 * pi / P;
+
+        float d = jed - epoch;
+        float M = ma_rad + n_rad * d;
+
+        // Estimate eccentric and true anom using iterative approx
+        float E0 = M;
+        // converted do/while:
+        float E1 = M + e * sin(E0);
+        float lastdiff = abs(E1-E0);
+        E0 = E1;
+        for (int iter=0; iter < 5; iter++) {
+          E1 = M + e * sin(E0);
+          lastdiff = abs(E1-E0);
+          E0 = E1;
+          if (lastdiff > 0.0000001) {
+            break;
+          }
+        }
+        float E = E0;
+
+        float v = 2.0 * atan(sqrt((1.0+e)/(1.0-e)) * tan(E/2.0));
+
+        // radius vector, in AU
+        float r = a * (1.0 - e*e) / (1.0 + e * cos(v)) * 50.;  // pixels per NM
+
+        // heliocentric coords
+        float X = r * (cos(o_rad) * cos(v + p_rad - o_rad) - sin(o_rad) * sin(v + p_rad - o_rad) * cos(i_rad));
+        float Y = r * (sin(o_rad) * cos(v + p_rad - o_rad) + cos(o_rad) * sin(v + p_rad - o_rad) * cos(i_rad));
+        float Z = r * (sin(v + p_rad - o_rad) * sin(i_rad));
+        return vec3(X, Y, Z);
+      }
+
+      void main() {
+        vColor = value_color;
+        if (abs(visible) < 0.1) {
+          vDiscard = 1.0;
+          return;
+        }
+
+        vec3 newpos = getAstroPos();
+        vec4 mvPosition = modelViewMatrix * vec4(newpos, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        gl_PointSize = size;
+      }
+  </script>
+  <script type="x-shader/x-fragment" id="orbit-fragment-shader">
+      // MIT License.
+      // Copyright Ian Webster 2012 (asterank.com)
+      // https://github.com/typpo/asterank/blob/master/LICENSE
+      varying vec3 vColor;
+      varying float vDiscard;
+      uniform sampler2D small_roid_texture;
+
+      void main() {
+        if (abs(vDiscard - 1.0) < 0.1) discard;
+        gl_FragColor = vec4(vColor, 1.0) * texture2D(small_roid_texture,
+          vec2(gl_PointCoord.x, 1.0 - gl_PointCoord.y));
+      }
+  </script>
+
+  <script id="surfaceMouseover" type="text/template">
+    Name: <%= data.name %><br>
+    Year: <%= data.year %><br>
+    Country: <%= data.country %>
+  </script>
+
+  <!-- Include vendor scripts -->
+  <script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.8/jquery.min.js"></script>
+  <script type="text/javascript" src="vendor/three.min.js"></script>
+  <script type="text/javascript" src="vendor/TrackballControls.js"></script>
+  <script type="text/javascript" src="vendor/detector.min.js"></script>
+  <script type="text/javascript" src="vendor/stats.min.js"></script>
+  <script type="text/javascript" src="vendor/screenfull.min.js"></script>
+  <script type="text/javascript" src="vendor/threex.domevents.js"></script>
+  <script type="text/javascript" src="vendor/dat.gui.js"></script>
+  <script type="text/javascript" src="vendor/template.js"></script>
+
+  <!-- Include Three.JS scene controller script -->
+  <script type="text/javascript" src="js/data.js"></script>
+  <script type="text/javascript" src="js/orbits.js"></script>
+  <script type="text/javascript" src="js/ellipse.js"></script>
+  <script type="text/javascript" src="js/index.js"></script>
+
+  <noscript>
+    <p>You need javascript enabled in order to use this web application.</p>
+  </noscript>
+
+<!-- start Mixpanel --><script type="text/javascript">(function(d,c){var a,b,g,e;a=d.createElement("script");a.type="text/javascript";a.async=!0;a.src=("https:"===d.location.protocol?"https:":"http:")+'//api.mixpanel.com/site_media/js/api/mixpanel.2.js';b=d.getElementsByTagName("script")[0];b.parentNode.insertBefore(a,b);c._i=[];c.init=function(a,d,f){var b=c;"undefined"!==typeof f?b=c[f]=[]:f="mixpanel";g="disable track track_pageview track_links track_forms register register_once unregister identify name_tag set_config".split(" ");
+  for(e=0;e<g.length;e++)(function(a){b[a]=function(){b.push([a].concat(Array.prototype.slice.call(arguments,0)))}})(g[e]);c._i.push([a,d,f])};window.mixpanel=c})(document,[]);
+  mixpanel.init("33c7e2f25d35df78f45321ffd7525b2b");</script><!-- end Mixpanel -->
+<script>mixpanel.track('luna');</script>
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+  ga('create', 'UA-52596552-1', 'auto');
+  ga('send', 'pageview');
+</script>
+</body>
+</html>
